@@ -29,6 +29,15 @@ bool sd_session_host_ready();
 void sd_session_set_bus_width(int width);
 int sd_session_get_bus_width();
 
+// Runtime SDMMC clock-rate override (kHz), applied on the NEXT sd_session_begin_host() call -
+// defaults to SDMMC_FREQ_DEFAULT (20MHz), which ESP-IDF normally only uses AFTER identification
+// completes against a real card. Added to test whether a non-compliant target (e.g. an FPGA fake
+// card under development, which may not be built to handle a 20MHz external clock) needs the
+// real SD spec's slower identification-phase rate (<=400kHz) to be recognized at all. Forces a
+// fresh host teardown/rebuild if the host is already up, same as sd_session_set_bus_width().
+void sd_session_set_max_freq_khz(int khz);
+int sd_session_get_max_freq_khz();
+
 // Always valid once sd_session_begin_host() has succeeded - rca/csd/cid start zeroed and get
 // filled in as command handlers process real responses (e.g. after a real CMD3, call
 // sd_session_set_rca() so later per-card commands use the right address).

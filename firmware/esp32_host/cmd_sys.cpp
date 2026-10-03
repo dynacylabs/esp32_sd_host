@@ -24,6 +24,7 @@ static void do_info() {
   out += "free_heap=" + String(ESP.getFreeHeap()) + "\n";
   out += "sd_host_ready=" + String(sd_session_host_ready() ? 1 : 0) + "\n";
   out += "sd_bus_width=" + String(sd_session_get_bus_width()) + "\n";
+  out += "sd_max_freq_khz=" + String(sd_session_get_max_freq_khz()) + "\n";
   out += "sd_fs_mounted=" + String(sd_session_fs_mounted() ? 1 : 0) + "\n";
   if (sd_session_fs_mounted()) {
     sdmmc_card_t *card = sd_session_card();
@@ -171,6 +172,21 @@ bool cmd_sys_dispatch(const String &cmd, String *parts, int nparts) {
     sd_session_unmount_fs();
     sd_session_set_bus_width(w);
     uart_ok(String(w));
+    return true;
+  }
+  if (cmd == "FREQ") {
+    if (nparts < 2) {
+      uart_ok(String(sd_session_get_max_freq_khz()));
+      return true;
+    }
+    int khz = parts[1].toInt();
+    if (khz <= 0) {
+      uart_err("usage: FREQ <khz>");
+      return true;
+    }
+    sd_session_unmount_fs();
+    sd_session_set_max_freq_khz(khz);
+    uart_ok(String(khz));
     return true;
   }
   return false;

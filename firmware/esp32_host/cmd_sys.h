@@ -1,11 +1,15 @@
 // System-level commands: PING, INFO, REBOOT, HOSTINIT, MOUNT/UNMOUNT, FORMAT, CARDINIT, WIDTH,
-// and FWUPDATE - the button-free, UART-only firmware update path (no OTA/WiFi at all in this
-// firmware by design). FWUPDATE uses a per-chunk-acknowledged protocol, not a single bulk
+// FREQ, and FWUPDATE - the button-free, UART-only firmware update path (no OTA/WiFi at all in
+// this firmware by design). FWUPDATE uses a per-chunk-acknowledged protocol, not a single bulk
 // transfer - see the comment above do_fwupdate() in cmd_sys.cpp for why a naive "ready, then
 // blast everything" approach silently lost bytes during real flash-write stalls.
 // WIDTH [1|4]: with no argument, reports the current runtime SD bus width. With an argument,
 // switches it (tearing down any mounted filesystem/host state first) for the NEXT HOSTINIT/MOUNT
 // call - added to test a board's 1-bit vs 4-bit wiring without a reflash each time.
+// FREQ [khz]: with no argument, reports the current runtime SDMMC clock-rate ceiling (kHz). With
+// an argument, switches it for the NEXT HOSTINIT/MOUNT call - added to test whether a
+// non-compliant target needs the real SD spec's slower identification-phase rate (default is
+// ESP-IDF's own SDMMC_FREQ_DEFAULT, 20MHz, normally only meant for AFTER identification).
 // FORMAT: like MOUNT, but ERASES the card and reformats it as FAT32 if no recognized filesystem
 // is found, then mounts it. Unlike MOUNT, this is destructive by design - only run it against a
 // card you don't need the existing contents of.

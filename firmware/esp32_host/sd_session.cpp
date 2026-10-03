@@ -12,6 +12,7 @@ static bool s_host_ready = false;
 static bool s_fs_mounted = false;
 static sdmmc_card_t *s_fs_card = nullptr;   // populated by esp_vfs_fat_sdmmc_mount on success
 static int s_bus_width = SD_USE_4BIT_MODE ? 4 : 1;   // runtime-overridable, see sd_session.h
+static int s_max_freq_khz = SDMMC_FREQ_DEFAULT;      // runtime-overridable, see sd_session.h
 
 static void fill_slot_pins(sdmmc_slot_config_t *slot) {
   slot->clk = (gpio_num_t)SD_PIN_CLK;
@@ -38,6 +39,19 @@ int sd_session_get_bus_width() {
   return s_bus_width;
 }
 
+void sd_session_set_max_freq_khz(int khz) {
+  s_max_freq_khz = khz;
+  if (s_host_ready) {
+    sdmmc_host_deinit_slot(SDMMC_HOST_SLOT_1);
+    sdmmc_host_deinit();
+    s_host_ready = false;
+  }
+}
+
+int sd_session_get_max_freq_khz() {
+  return s_max_freq_khz;
+}
+
 bool sd_session_begin_host() {
   if (s_host_ready) {
     return true;
@@ -47,7 +61,7 @@ bool sd_session_begin_host() {
 
   sdmmc_host_t host = SDMMC_HOST_DEFAULT();
   host.slot = SDMMC_HOST_SLOT_1;
-  host.max_freq_khz = SDMMC_FREQ_DEFAULT;
+  host.max_freq_khz = s_max_freq_khz;
   s_host_config = host;
 
   sdmmc_slot_config_t slot = SDMMC_SLOT_CONFIG_DEFAULT();
