@@ -174,6 +174,38 @@ bool cmd_sys_dispatch(const String &cmd, String *parts, int nparts) {
     uart_ok(String(w));
     return true;
   }
+  if (cmd == "PINSET") {
+    if (nparts < 3) {
+      uart_err("usage: PINSET <gpio> <0|1>");
+      return true;
+    }
+    int gpio = parts[1].toInt();
+    int level = parts[2].toInt() ? HIGH : LOW;
+    pinMode(gpio, OUTPUT);
+    digitalWrite(gpio, level);
+    uart_ok(String(gpio));
+    return true;
+  }
+  if (cmd == "PINTOG") {
+    int n = nparts >= 2 ? parts[1].toInt() : 0;
+    if (n <= 0 || n > 10000) {
+      uart_err("usage: PINTOG <count 1-10000>");
+      return true;
+    }
+    pinMode(SD_PIN_CLK, OUTPUT);
+    pinMode(SD_PIN_CMD, OUTPUT);
+    for (int i = 0; i < n; i++) {
+      digitalWrite(SD_PIN_CMD, (i % 2) ? HIGH : LOW);
+      digitalWrite(SD_PIN_CLK, HIGH);
+      delayMicroseconds(20);
+      digitalWrite(SD_PIN_CLK, LOW);
+      delayMicroseconds(20);
+    }
+    bool hold_low = nparts >= 3 && parts[2].equalsIgnoreCase("low");
+    digitalWrite(SD_PIN_CMD, hold_low ? LOW : HIGH);
+    uart_ok(String(n));
+    return true;
+  }
   if (cmd == "FREQ") {
     if (nparts < 2) {
       uart_ok(String(sd_session_get_max_freq_khz()));
