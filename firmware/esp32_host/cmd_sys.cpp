@@ -6,6 +6,8 @@
 #include <Update.h>
 #include <esp_chip_info.h>
 #include <esp_flash.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 
 static void do_ping() {
   Serial.print("P");
@@ -95,6 +97,75 @@ static void do_fwupdate(const String &len_str) {
   Serial.flush();
   delay(100);
   ESP.restart();
+}
+
+// Original (non-S3) ESP32's SDMMC peripheral has no GPIO-matrix remap support
+// (SOC_SDMMC_USE_GPIO_MATRIX is undefined for this chip) in the older driver generation - open
+// question is whether the newer driver's slot.cmd/d0-d3 "custom pin" config actually routes
+// anything on this chip, or silently no-ops while the peripheral keeps driving its native pins
+// (CLK=14/CMD=15/D0=2/D1=4/D2=12/D3=13) regardless. This self-samples an arbitrary GPIO on core 0
+// while CARDINIT's real negotiation runs on core 1, so a currently-unused native pin (e.g. 15, 2,
+// 4, 12, 13) can be checked for real signal activity during a real attempt without touching wiring.
+#define SCOPE_MAX_SAMPLES 16000
+static uint8_t s_scope_buf[SCOPE_MAX_SAMPLES];
+static volatile int s_scope_gpio = -1;
+static volatile size_t s_scope_n = 0;
+static volatile size_t s_scope_count = 0;
+static volatile bool s_scope_stop = false;
+
+static void scope_task_fn(void *arg) {
+  int gpio = s_scope_gpio;
+  size_t n = s_scope_n;
+  size_t i = 0;
+  while (i < n && !s_scope_stop) {
+    s_scope_buf[i++] = (uint8_t)digitalRead(gpio);
+  }
+  s_scope_count = i;
+  vTaskDelete(NULL);
+}
+
+static void do_scopepin(const String &gpio_str, const String &n_str, bool trigger_init) {
+  int gpio = gpio_str.toInt();
+  size_t n = (size_t)n_str.toInt();
+  if (n == 0 || n > SCOPE_MAX_SAMPLES) {
+    uart_err("usage: <gpio> <samples 1-" + String(SCOPE_MAX_SAMPLES) + ">");
+    return;
+  }
+  pinMode(gpio, INPUT);
+
+  s_scope_gpio = gpio;
+  s_scope_n = n;
+  s_scope_count = 0;
+  s_scope_stop = false;
+
+  TaskHandle_t task = nullptr;
+  xTaskCreatePinnedToCore(scope_task_fn, "scope", 4096, NULL, 1, &task, 0);
+  delay(5);   // let the sampling task spin up and start reading before triggering the real init
+
+  int err = 0;
+  if (trigger_init) {
+    err = sd_session_card_init();
+  } else {
+    delay(30);   // idle baseline - no bus activity triggered, same approximate window length
+  }
+
+  delay(200);   // give the task a chance to fill the buffer naturally if it hasn't already
+  s_scope_stop = true;
+  delay(20);    // let the task observe the stop flag and self-delete
+
+  size_t transitions = 0;
+  for (size_t i = 1; i < s_scope_count; i++) {
+    if (s_scope_buf[i] != s_scope_buf[i - 1]) transitions++;
+  }
+  size_t ones = 0;
+  for (size_t i = 0; i < s_scope_count; i++) ones += s_scope_buf[i];
+
+  String out = "card_init_err=0x" + String(err, 16) + " gpio=" + String(gpio) +
+               " samples=" + String((uint32_t)s_scope_count) +
+               " ones=" + String((uint32_t)ones) +
+               " transitions=" + String((uint32_t)transitions);
+  Serial.println(out);
+  uart_ok();
 }
 
 bool cmd_sys_dispatch(const String &cmd, String *parts, int nparts) {
@@ -204,6 +275,22 @@ bool cmd_sys_dispatch(const String &cmd, String *parts, int nparts) {
     bool hold_low = nparts >= 3 && parts[2].equalsIgnoreCase("low");
     digitalWrite(SD_PIN_CMD, hold_low ? LOW : HIGH);
     uart_ok(String(n));
+    return true;
+  }
+  if (cmd == "SCOPEPIN") {
+    if (nparts < 3) {
+      uart_err("usage: SCOPEPIN <gpio> <samples>");
+      return true;
+    }
+    do_scopepin(parts[1], parts[2], true);
+    return true;
+  }
+  if (cmd == "SCOPEIDLE") {
+    if (nparts < 3) {
+      uart_err("usage: SCOPEIDLE <gpio> <samples>");
+      return true;
+    }
+    do_scopepin(parts[1], parts[2], false);
     return true;
   }
   if (cmd == "FREQ") {
