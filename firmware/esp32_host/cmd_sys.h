@@ -17,6 +17,17 @@
 // entirely - useful to isolate whether a MOUNT/FORMAT failure is in card negotiation itself or
 // in the filesystem-specific step on top of it, and to get a real esp_err_t instead of MOUNT's
 // generic failure code.
+//
+// Raw-GPIO diagnostics, none of which touch the SDMMC peripheral:
+//   PINSET <gpio> <0|1>       drives a pin to a fixed level (plain digitalWrite).
+//   PINGET <gpio>             reads a pin's current level (plain digitalRead).
+//   PINTOG <count> [low]      toggles SD_PIN_CMD/SD_PIN_CLK <count> times (a manual clock/data
+//                             square wave), then leaves CMD high unless "low" is given.
+//   SCOPEPIN <gpio> <samples> self-samples a pin on core 0 (up to SCOPE_MAX_SAMPLES times) while
+//                             a real CARDINIT runs on core 1 - reports ones/transitions, to check
+//                             whether a candidate pin is actually driven by the SDMMC peripheral.
+//   SCOPEIDLE <gpio> <samples> same self-sampling, but with no SD activity triggered - an idle
+//                             baseline to compare SCOPEPIN's result against.
 #pragma once
 
 #include <Arduino.h>
