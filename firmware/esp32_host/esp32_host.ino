@@ -20,6 +20,7 @@
 #include "cmd_sys.h"
 #include "cmd_raw.h"
 #include "cmd_fs.h"
+#include "cmd_bb.h"
 #include "esp_log.h"
 
 void setup() {
@@ -65,6 +66,7 @@ void loop() {
   if (cmd_sys_dispatch(cmd, parts, nparts)) return;
   if (cmd_raw_dispatch(cmd, parts, nparts)) return;
   if (cmd_fs_dispatch(cmd, parts, nparts)) return;
+  if (cmd_bb_dispatch(cmd, parts, nparts)) return;
 
   uart_err("unknown_command:" + cmd);
 }

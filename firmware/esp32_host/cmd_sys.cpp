@@ -257,6 +257,16 @@ bool cmd_sys_dispatch(const String &cmd, String *parts, int nparts) {
     uart_ok(String(gpio));
     return true;
   }
+  if (cmd == "PINGET") {
+    if (nparts < 2) {
+      uart_err("usage: PINGET <gpio>");
+      return true;
+    }
+    int gpio = parts[1].toInt();
+    pinMode(gpio, INPUT);
+    uart_ok(String(digitalRead(gpio)));
+    return true;
+  }
   if (cmd == "PINTOG") {
     int n = nparts >= 2 ? parts[1].toInt() : 0;
     if (n <= 0 || n > 10000) {
