@@ -96,11 +96,10 @@ static int bb_recv_response(uint8_t *out_buf, int resp_bits, int max_wait_clocks
   // level both ends agree on.
   pinMode(BB_PIN_CMD, INPUT_PULLUP);
   int waited = 0;
-  int level = HIGH;
   for (; waited < max_wait_clocks; waited++) {
     digitalWrite(BB_PIN_CLK, HIGH);
     delayMicroseconds(3);
-    level = digitalRead(BB_PIN_CMD);
+    int level = digitalRead(BB_PIN_CMD);
     digitalWrite(BB_PIN_CLK, LOW);
     delayMicroseconds(3);
     if (level == LOW) break;
@@ -112,7 +111,7 @@ static int bb_recv_response(uint8_t *out_buf, int resp_bits, int max_wait_clocks
   for (int i = 1; i < resp_bits; i++) {   // bit 0 is the start bit already known to be 0
     digitalWrite(BB_PIN_CLK, HIGH);
     delayMicroseconds(3);
-    level = digitalRead(BB_PIN_CMD);
+    int level = digitalRead(BB_PIN_CMD);
     digitalWrite(BB_PIN_CLK, LOW);
     delayMicroseconds(3);
     if (level) {
