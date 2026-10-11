@@ -8,10 +8,15 @@
 // Bit-bangs on whichever physical pins the Tang Nano's wires actually reach right now - NOT
 // config.h's SD_PIN_CLK/SD_PIN_CMD, since those were just corrected to point at this chip's real
 // native SDMMC pins (14/15), which this board's CMD wire is no longer physically connected to.
-// The real CMD wire is still on GPIO17 (unchanged all session); CLK happens to already be right
-// either way, since 14 is both the native pin and where the wire has always been.
+// CMD updated 2026-10-11: the white wire is now on GPIO21 (moved there from GPIO17 earlier this
+// session - see blog/journal.md). Root cause of GPIO17/the Tang Nano's own old pin 74 never
+// tracking anything was found and fixed the same night: pin 74's own FPGA pad was faulty (could
+// pull to ~21mV but never above ~0.68V, measured in total isolation), unrelated to this board at
+// all - sd_cmd_up moved to pin 75 in constraints/tangnano20k.cst, confirmed full 0/1 swing via
+// STRAPOV+PINGET on this exact pin before this fix was made. CLK remains correct at 14, unchanged
+// all session.
 #define BB_PIN_CLK 14
-#define BB_PIN_CMD 17
+#define BB_PIN_CMD 21
 
 #define BB_RESP_MAX_BYTES 24   // fits R2's 136 bits (17 bytes) with room to spare
 
