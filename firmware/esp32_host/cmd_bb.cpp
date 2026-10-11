@@ -352,9 +352,12 @@ static void cmd_bbread17(String *parts, int nparts) {
 // the point is proving the data phase itself works end to end against a real host, verifiable
 // afterward with the same LBA's own RDCARD reading, not accepting arbitrary user data over this
 // one raw diagnostic command.
+// [data_hex] (NEW, optional): 1024 hex chars = the real 512-byte block to send instead of the
+// fixed ramp pattern - added so a real caller-chosen payload (e.g. a real exFAT directory entry
+// set) can go out over an actual host write, not just the fixed self-test pattern.
 static void cmd_bbwrite24(String *parts, int nparts) {
   if (nparts < 2) {
-    uart_err("usage: BBWRITE24 <lba_hex>");
+    uart_err("usage: BBWRITE24 <lba_hex> [data_hex]");
     return;
   }
   uint32_t lba = (uint32_t)strtoul(parts[1].c_str(), nullptr, 16);
@@ -375,7 +378,20 @@ static void cmd_bbwrite24(String *parts, int nparts) {
   bool r1_crc_ok = (r1_got_crc == r1_want_crc);
 
   uint8_t block[BB_BLOCK_BYTES];
-  for (int i = 0; i < BB_BLOCK_BYTES; i++) block[i] = (uint8_t)i;
+  if (nparts >= 3 && parts[2].length() == BB_BLOCK_BYTES * 2) {
+    for (int i = 0; i < BB_BLOCK_BYTES; i++) {
+      char hi = parts[2].charAt(i * 2), lo = parts[2].charAt(i * 2 + 1);
+      auto nib = [](char c) -> uint8_t {
+        if (c >= '0' && c <= '9') return c - '0';
+        if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+        if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+        return 0;
+      };
+      block[i] = (nib(hi) << 4) | nib(lo);
+    }
+  } else {
+    for (int i = 0; i < BB_BLOCK_BYTES; i++) block[i] = (uint8_t)i;
+  }
 
   bb_dat0_send_block(block);
   int token = bb_dat0_recv_token(2000);
