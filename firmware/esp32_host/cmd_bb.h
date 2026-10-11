@@ -9,6 +9,10 @@
 // on that circuitry, sidestepping both problems. Only CLK+CMD are needed for the full
 // identification sequence (CMD0/CMD8/ACMD41/CMD2/CMD3/CMD9/CMD7) - no DAT lines, so this works
 // over the current physical wiring with no rewire.
+//
+// DAT0 added 2026-10-11 (BBREAD17/BBWRITE24): the actual data PHASE of a real CMD17/CMD24, not
+// just the R1 command-level handshake every other BBCMD/BBINIT call exercises - this is what
+// finally lets a real external host test this project's own data plane, not only enumeration.
 #pragma once
 
 #include <Arduino.h>

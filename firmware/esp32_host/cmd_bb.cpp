@@ -17,8 +17,15 @@
 // all session.
 #define BB_PIN_CLK 14
 #define BB_PIN_CMD 21
+// DAT0 (2026-10-11, NEW): confirmed via tonight's own STRAPOV+PINGET sweep (see blog/journal.md)
+// - GPIO25 tracked the Tang Nano's forced DAT0 level cleanly, same as every other D0-D3 pin
+// checked that night. Added so a real CMD17/CMD24 data PHASE (not just the R1 command-response
+// handshake BBCMD/BBINIT already covered) can be exercised against the real host bus for the
+// first time - everything before this was command-level only.
+#define BB_PIN_DAT0 25
 
 #define BB_RESP_MAX_BYTES 24   // fits R2's 136 bits (17 bytes) with room to spare
+#define BB_BLOCK_BYTES 512
 
 static uint8_t crc7_update(uint8_t crc, uint8_t bit) {
   uint8_t crc_in = bit ^ ((crc >> 6) & 1);
@@ -138,6 +145,115 @@ static String bytes_to_hex(const uint8_t *buf, int nbytes) {
   return out;
 }
 
+// ---- DAT0 data-phase primitives (NEW 2026-10-11) ----
+// CRC16-CCITT (poly 0x1021, init 0, MSB-first, non-reflected) - the same algorithm as this
+// project's own sd_crc16.v, already independently cross-checked against the standard textbook
+// formula and a from-scratch sd_crc16.v bit-serial replica during tonight's DATTEST work (see
+// hdl/step14_top.v's own git history) before being trusted anywhere.
+static inline uint16_t crc16_step(uint16_t crc, uint8_t bit) {
+  uint8_t msb = (crc >> 15) & 1;
+  crc = (crc << 1) & 0xFFFF;
+  if (msb ^ bit) crc ^= 0x1021;
+  return crc;
+}
+
+static uint16_t crc16_of_bytes(const uint8_t *buf, int nbytes) {
+  uint16_t crc = 0;
+  for (int i = 0; i < nbytes; i++) {
+    for (int b = 7; b >= 0; b--) {
+      crc = crc16_step(crc, (buf[i] >> b) & 1);
+    }
+  }
+  return crc;
+}
+
+// Sends one 512-byte block on DAT0: start bit(0), 4096 data bits MSB-first, CRC16(16 bits
+// MSB-first) - matches sd_data_receiver_1bit.v's own documented frame exactly. Host->card
+// direction (CMD24's data phase), so this drives DAT0 as an output throughout.
+static void bb_dat0_send_block(const uint8_t *block) {
+  pinMode(BB_PIN_DAT0, OUTPUT);
+  digitalWrite(BB_PIN_DAT0, LOW);     // start bit
+  bb_clk_pulse();
+  for (int i = 0; i < BB_BLOCK_BYTES * 8; i++) {
+    uint8_t bit = (block[i / 8] >> (7 - (i % 8))) & 1;
+    digitalWrite(BB_PIN_DAT0, bit);
+    bb_clk_pulse();
+  }
+  uint16_t crc = crc16_of_bytes(block, BB_BLOCK_BYTES);
+  for (int i = 15; i >= 0; i--) {
+    digitalWrite(BB_PIN_DAT0, (crc >> i) & 1);
+    bb_clk_pulse();
+  }
+  digitalWrite(BB_PIN_DAT0, HIGH);    // release to idle - the card's own response token follows
+}
+
+// Waits for and captures the card's 3-bit data-response token (start(0)+status(3)+end(1), 5 bits
+// total) after a block write. Returns the 3-bit status (0b010=accepted, 0b101=CRC error, per
+// spec), or -1 on timeout.
+static int bb_dat0_recv_token(int max_wait_clocks) {
+  pinMode(BB_PIN_DAT0, INPUT_PULLUP);
+  int waited = 0;
+  for (; waited < max_wait_clocks; waited++) {
+    digitalWrite(BB_PIN_CLK, HIGH);
+    delayMicroseconds(3);
+    int level = digitalRead(BB_PIN_DAT0);
+    digitalWrite(BB_PIN_CLK, LOW);
+    delayMicroseconds(3);
+    if (level == LOW) break;
+  }
+  if (waited >= max_wait_clocks) return -1;
+  uint8_t status = 0;
+  for (int i = 0; i < 3; i++) {
+    digitalWrite(BB_PIN_CLK, HIGH);
+    delayMicroseconds(3);
+    int level = digitalRead(BB_PIN_DAT0);
+    digitalWrite(BB_PIN_CLK, LOW);
+    delayMicroseconds(3);
+    status = (status << 1) | (level ? 1 : 0);
+  }
+  bb_clk_pulse();   // end bit - not checked, matching this project's general best-effort scope
+  return status;
+}
+
+// Waits for and captures one 512-byte block from DAT0 (card->host direction, CMD17's data
+// phase): start bit, 4096 data bits, CRC16. Returns true on success (regardless of CRC result -
+// *crc_ok_out reports that separately, same discipline as do_bbcmd's own CMD-level CRC check).
+static bool bb_dat0_recv_block(uint8_t *block, bool *crc_ok_out, int max_wait_clocks, int *waited_out = nullptr) {
+  pinMode(BB_PIN_DAT0, INPUT_PULLUP);
+  int waited = 0;
+  for (; waited < max_wait_clocks; waited++) {
+    digitalWrite(BB_PIN_CLK, HIGH);
+    delayMicroseconds(3);
+    int level = digitalRead(BB_PIN_DAT0);
+    digitalWrite(BB_PIN_CLK, LOW);
+    delayMicroseconds(3);
+    if (level == LOW) break;
+  }
+  if (waited_out) *waited_out = waited;
+  if (waited >= max_wait_clocks) return false;
+
+  memset(block, 0, BB_BLOCK_BYTES);
+  for (int i = 0; i < BB_BLOCK_BYTES * 8; i++) {
+    digitalWrite(BB_PIN_CLK, HIGH);
+    delayMicroseconds(3);
+    int level = digitalRead(BB_PIN_DAT0);
+    digitalWrite(BB_PIN_CLK, LOW);
+    delayMicroseconds(3);
+    if (level) block[i / 8] |= (1 << (7 - (i % 8)));
+  }
+  uint16_t rx_crc = 0;
+  for (int i = 0; i < 16; i++) {
+    digitalWrite(BB_PIN_CLK, HIGH);
+    delayMicroseconds(3);
+    int level = digitalRead(BB_PIN_DAT0);
+    digitalWrite(BB_PIN_CLK, LOW);
+    delayMicroseconds(3);
+    rx_crc = (rx_crc << 1) | (level ? 1 : 0);
+  }
+  if (crc_ok_out) *crc_ok_out = (rx_crc == crc16_of_bytes(block, BB_BLOCK_BYTES));
+  return true;
+}
+
 // Core primitive: send one command frame, optionally wait for and capture a response. resp_bits
 // <= 0 means no response expected (e.g. CMD0). Reports via uart_ok/uart_err itself.
 static bool do_bbcmd(uint8_t index, uint32_t arg, int resp_bits, String *resp_hex_out, bool *crc_ok_out) {
@@ -186,6 +302,90 @@ static void cmd_bbcmd(String *parts, int nparts) {
     return;
   }
   uart_ok("resp=" + resp_hex + " crc_ok=" + String(crc_ok ? 1 : 0));
+}
+
+// CMD17 (READ_SINGLE_BLOCK) over the real host bus, R1 response + the actual 512-byte data phase
+// on DAT0 - the first time this project's data plane (not just the command-level handshake) has
+// been exercised by a real external host. Reports the R1 status, the data-phase CRC result, and
+// the full 512 bytes as hex so the caller can diff it directly against the same LBA's own
+// RDCARD reading (the Tang Nano's own direct path to the real card, independent of this whole
+// host-bus round trip) - the strongest possible check, not just "a CRC matched".
+static void cmd_bbread17(String *parts, int nparts) {
+  if (nparts < 2) {
+    uart_err("usage: BBREAD17 <lba_hex>");
+    return;
+  }
+  uint32_t lba = (uint32_t)strtoul(parts[1].c_str(), nullptr, 16);
+
+  bb_claim_pins();
+  uint8_t frame[6];
+  build_frame(17, lba, frame);
+  bb_send_frame(frame);
+
+  uint8_t resp[6] = {0};
+  int waited = bb_recv_response(resp, 48, 256);
+  if (waited < 0) {
+    uart_err("no_r1_response");
+    return;
+  }
+  uint8_t r1_got_crc = resp[5] >> 1;
+  uint8_t r1_want_crc = crc7_of_bits(resp, 40);
+  bool r1_crc_ok = (r1_got_crc == r1_want_crc);
+
+  uint8_t block[BB_BLOCK_BYTES];
+  bool data_crc_ok = false;
+  int data_waited = -1;
+  bool got_block = bb_dat0_recv_block(block, &data_crc_ok, 2000, &data_waited);
+  if (!got_block) {
+    uart_err("no_data_block waited=" + String(data_waited));
+    return;
+  }
+  uart_ok("r1_crc_ok=" + String(r1_crc_ok ? 1 : 0) +
+          " data_crc_ok=" + String(data_crc_ok ? 1 : 0) +
+          " waited=" + String(data_waited) +
+          " data=" + bytes_to_hex(block, BB_BLOCK_BYTES));
+}
+
+// CMD24 (WRITE_BLOCK) over the real host bus, R1 response + a real 512-byte data phase on DAT0 -
+// the write-direction counterpart to BBREAD17. Sends a fixed, known ramp pattern (byte i = i &
+// 0xFF) rather than caller-supplied data, matching DATTEST's own synthetic-pattern convention -
+// the point is proving the data phase itself works end to end against a real host, verifiable
+// afterward with the same LBA's own RDCARD reading, not accepting arbitrary user data over this
+// one raw diagnostic command.
+static void cmd_bbwrite24(String *parts, int nparts) {
+  if (nparts < 2) {
+    uart_err("usage: BBWRITE24 <lba_hex>");
+    return;
+  }
+  uint32_t lba = (uint32_t)strtoul(parts[1].c_str(), nullptr, 16);
+
+  bb_claim_pins();
+  uint8_t frame[6];
+  build_frame(24, lba, frame);
+  bb_send_frame(frame);
+
+  uint8_t resp[6] = {0};
+  int waited = bb_recv_response(resp, 48, 256);
+  if (waited < 0) {
+    uart_err("no_r1_response");
+    return;
+  }
+  uint8_t r1_got_crc = resp[5] >> 1;
+  uint8_t r1_want_crc = crc7_of_bits(resp, 40);
+  bool r1_crc_ok = (r1_got_crc == r1_want_crc);
+
+  uint8_t block[BB_BLOCK_BYTES];
+  for (int i = 0; i < BB_BLOCK_BYTES; i++) block[i] = (uint8_t)i;
+
+  bb_dat0_send_block(block);
+  int token = bb_dat0_recv_token(2000);
+  if (token < 0) {
+    uart_err("no_data_response_token");
+    return;
+  }
+  uart_ok("r1_crc_ok=" + String(r1_crc_ok ? 1 : 0) +
+          " token=" + String(token, BIN) +
+          " accepted=" + String(token == 0b010 ? 1 : 0));
 }
 
 // Runs the real identification sequence this project's Tang Nano target implements
@@ -287,6 +487,14 @@ bool cmd_bb_dispatch(const String &cmd, String *parts, int nparts) {
   if (cmd == "BBTRACE") {
     s_bb_trace = (nparts >= 2) ? (parts[1].toInt() != 0) : !s_bb_trace;
     uart_ok(String(s_bb_trace ? 1 : 0));
+    return true;
+  }
+  if (cmd == "BBREAD17") {
+    cmd_bbread17(parts, nparts);
+    return true;
+  }
+  if (cmd == "BBWRITE24") {
+    cmd_bbwrite24(parts, nparts);
     return true;
   }
   return false;
