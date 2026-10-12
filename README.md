@@ -17,6 +17,19 @@ D2=12, D3=13 - the chip's own default SDMMC GPIO-matrix routing, not a board-spe
 most clones copying the AI-Thinker design use it unchanged). Override the six pins in `config.h`
 if a specific board differs.
 
+**Current wiring to the Tang Nano is not the native SDMMC pinout above.** The breakout's CMD wire
+no longer reaches GPIO15 (confirmed 2026-10-09 while debugging why the native peripheral's own
+response-detection interrupt rejected every real response - it also turned out to reject real
+responses even when correctly wired, because of how the Tang Nano releases CMD to idle, which is
+the second, independent reason the native path is unused now). `cmd_bb.cpp`/`cmd_bb.h` drive the
+Tang Nano directly via plain GPIO instead: `BB_PIN_CLK=14` (same pin as native), `BB_PIN_CMD=21`,
+`BB_PIN_DAT0=25`. **Every real identification/data-plane test this project has run against the
+Tang Nano uses this bit-banged path, not `cmd_raw.h`'s `RAWCMD`/`CMD0`-`CMD13` family** - that
+family talks to the native SDMMC peripheral on GPIO14/15/2/4/12/13 and is only proven against a
+real physical card in the ESP32's own slot (see "Verified so far (2026-10-01)" below). It would
+need the breakout physically rewired back to the native CMD pin (GPIO15) to be meaningful against
+the Tang Nano, which hasn't been done.
+
 **Known hardware limitation**: GPIO12 (SD DAT2) doubles as the ESP32's flash-voltage strapping
 pin. A real card/breakout board inserted into the slot *during any reset* can cause the chip to
 misdetect flash voltage and fail to boot - recoverable by removing the card and rebooting, not
@@ -95,6 +108,14 @@ See the header comments in each module for the authoritative, detailed list:
   `RM`/`RENAME`/`STAT`/`PUT`/`GET`) via standard POSIX calls once `MOUNT` succeeds. Expected to
   report "not mounted" until the FPGA under test implements enough of the real init sequence for
   FATFS to actually come up - that's normal, not a bug in this firmware.
+- [`cmd_bb.h`](firmware/esp32_host/cmd_bb.h) - **the actual proven path against the Tang Nano**
+  (see "Current wiring" above): manual bit-banged CLK/CMD/DAT0, bypassing the SDMMC peripheral
+  entirely. `BBINIT` (full identification: CMD0/CMD8/CMD55+ACMD41/CMD2/CMD3/CMD9/CMD7), `BBCMD
+  <index> <arg_hex> [resp_bits]` (one command, optional captured response), `BBTRACE` (dumps every
+  bit sent/received for a single command, for when a response needs byte-level inspection rather
+  than a decoded summary), `BBREAD17 <lba>` / `BBWRITE24 <lba> <hex bytes>` (the real DAT0 data
+  phase of CMD17/CMD24, added 2026-10-11 - the only commands in this file that exercise data, not
+  just the command-level R1 handshake).
 
 ### Verified so far (2026-10-01)
 
@@ -121,6 +142,21 @@ error-path testing done earlier:
   completes cleanly but this particular (cheap clone) card doesn't appear to actually erase data
   for it, unlike the regular `ERASE` command which does - a card/vendor quirk, not a firmware bug.
 - `RAWCMD` against a real responder (previously only tested against an empty slot).
+
+### Verified against the Tang Nano FPGA target (2026-10-09 through 2026-10-11, via `cmd_bb.h`)
+
+Everything above in this section was against a real physical microSD card, not the Tang Nano -
+this is the project's actual target, exercised through the bit-banged path instead (see "Current
+wiring" above for why `cmd_raw.h`'s native-SDMMC family isn't used here):
+
+- `BBINIT` (full identification sequence) run to completion repeatedly, including a 5-run-in-a-row
+  stability stress test - 5/5 clean `bbinit_complete`, every command `crc_ok=1`.
+- `BBREAD17`/`BBWRITE24` - the real DAT0 data phase of CMD17/CMD24, not just the command-level R1
+  handshake every other `BBCMD`/`BBINIT` call exercises. Write-then-readback verified byte-exact;
+  a real `BBWRITE24` was also used as the "use" half of a real TOCTOU check-then-use test (arming
+  `override`, confirming the swap was observed by a subsequent `BBREAD17`).
+- Direct `BBCMD`-level `CMD17` reads against specific LBAs, cross-checked against this project's
+  own `SECLOG?` access-log diagnostic to confirm the FPGA side actually saw the host's real reads.
 
 ### Real bugs found and fixed while building this (not just flagged gaps)
 
